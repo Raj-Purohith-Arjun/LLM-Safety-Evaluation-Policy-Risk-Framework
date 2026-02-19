@@ -12,6 +12,16 @@ from ..utils.helpers import EvaluationResult
 
 
 _SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS model_versions (
+    model_id        TEXT NOT NULL,
+    model_name      TEXT NOT NULL,
+    provider        TEXT,
+    version_tag     TEXT,
+    registered_at   TEXT NOT NULL,
+    notes           TEXT,
+    PRIMARY KEY (model_id)
+);
+
 CREATE TABLE IF NOT EXISTS evaluation_runs (
     run_id          TEXT NOT NULL,
     run_timestamp   TEXT NOT NULL,
@@ -120,6 +130,26 @@ class SafetyDatabase:
     # ------------------------------------------------------------------
     # Write operations
     # ------------------------------------------------------------------
+
+    def register_model_version(
+        self,
+        model_id: str,
+        model_name: str,
+        provider: str = "",
+        version_tag: str = "",
+        notes: str = "",
+    ) -> None:
+        """Register a model version in the ``model_versions`` table."""
+        sql = """
+            INSERT OR REPLACE INTO model_versions
+                (model_id, model_name, provider, version_tag, registered_at, notes)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """
+        with self._connect() as conn:
+            conn.execute(
+                sql,
+                (model_id, model_name, provider, version_tag, self._now(), notes),
+            )
 
     def insert_run(
         self,
@@ -309,4 +339,11 @@ class SafetyDatabase:
         """
         with self._connect() as conn:
             rows = conn.execute(sql, (run_id, n)).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_model_versions(self) -> list[dict]:
+        """Return all registered model versions ordered by registration time."""
+        sql = "SELECT * FROM model_versions ORDER BY registered_at DESC"
+        with self._connect() as conn:
+            rows = conn.execute(sql).fetchall()
         return [dict(r) for r in rows]
