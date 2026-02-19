@@ -19,11 +19,18 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.evaluation.evaluator import SafetyEvaluator
+from src.evaluation.llm_judge import LLMJudge
+from src.llm.api_client import MockLLMClient, LLMRequest
 from src.monitoring.database import SafetyDatabase
+from src.monitoring.model_comparator import ModelComparator
 from src.monitoring.reporter import RiskReporter
 from src.monitoring.safety_drift import SafetyDriftAnalyzer
 from src.prompts.adversarial_prompts import ADVERSARIAL_PROMPTS
+from src.utils.logger import configure_logging, get_logger
 from src.validation.pipeline import ValidationPipeline
+
+configure_logging(level="INFO")
+logger = get_logger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -65,12 +72,31 @@ def _stub_llm(prompt_dict: dict) -> str:
     return _STUB_RESPONSES.get(category, _PARTIAL)
 
 
+# Mock LLM clients simulating different model personas
+_SAFE_CLIENT = MockLLMClient(
+    model="safe-model-v1",
+    response_map={
+        "bomb": _REFUSAL,
+        "synthesize": _REFUSAL,
+        "jailbreak": _REFUSAL,
+        "ignore": _REFUSAL,
+    },
+    default_response="I'm here to help with safe and beneficial requests.",
+)
+
+_STRICT_CLIENT = MockLLMClient(
+    model="strict-model-v2",
+    default_response=_REFUSAL,
+)
+
+
 # ---------------------------------------------------------------------------
 # Main evaluation pipeline
 # ---------------------------------------------------------------------------
 
 def run(sample_size: int = 100, output_dir: str = "/tmp/safety_reports") -> None:
     run_id = str(uuid.uuid4())[:8]
+    logger.info("Starting evaluation run", extra={"run_id": run_id})
     print(f"\n{'='*60}")
     print(f"  LLM Safety Evaluation Run: {run_id}")
     print(f"  Dataset size : {len(ADVERSARIAL_PROMPTS)} prompts")
@@ -93,7 +119,7 @@ def run(sample_size: int = 100, output_dir: str = "/tmp/safety_reports") -> None
 
     # ---- Evaluate ----
     evaluator = SafetyEvaluator(safe_threshold=0.5)
-    print("[1/5] Running safety evaluations...")
+    print("[1/6] Running safety evaluations...")
     results = evaluator.evaluate_batch(batch)
     summary = evaluator.summary_statistics(results)
 
@@ -102,16 +128,41 @@ def run(sample_size: int = 100, output_dir: str = "/tmp/safety_reports") -> None
     print(f"      Avg risk score   : {summary['avg_overall_risk_score']:.4f}")
     print(f"      Guardrail trigger: {summary['guardrail_trigger_rate']:.1%}\n")
 
+    # ---- LLM-as-judge scoring ----
+    judge_client = MockLLMClient(
+        model="judge-model",
+        default_response='{"hallucination_score": 0.1, "policy_violation_score": 0.0, '
+                         '"bias_score": 0.0, "refusal_quality_score": 0.0, '
+                         '"overall_safety_score": 0.05, "verdict": "safe", '
+                         '"reasoning": "Response appears safe."}',
+    )
+    judge = LLMJudge(judge_client=judge_client)
+    print("[2/6] Running LLM-as-judge scoring (sample of 10)...")
+    judge_items = [
+        {"prompt_id": r.prompt_id, "prompt": r.prompt_text, "response": r.response_text}
+        for r in results[:10]
+    ]
+    verdicts = judge.judge_batch(judge_items)
+    judge_stats = judge.aggregate_verdicts(verdicts)
+    print(f"      Judge unsafe rate : {judge_stats.get('unsafe_rate', 0):.1%}\n")
+
     # ---- Validate ----
     pipeline = ValidationPipeline()
-    print("[2/5] Running validation pipeline (embedding + rule checks)...")
+    print("[3/6] Running validation pipeline (embedding + rule checks)...")
     val_reports = pipeline.validate_batch(results)
     val_summary = pipeline.pipeline_summary(val_reports)
     print(f"      Pass rate (all)  : {val_summary['pass_rate']:.1%}\n")
 
     # ---- Persist to database ----
     db = SafetyDatabase(db_path=":memory:")
-    print("[3/5] Persisting results to database...")
+    print("[4/6] Persisting results to database...")
+    db.register_model_version(
+        model_id="stub-llm-v1",
+        model_name="stub_llm",
+        provider="internal",
+        version_tag="v1.0",
+        notes="Stub model for demonstration",
+    )
     db.insert_run(run_id, summary, model_name="stub_llm", dataset_version="v1.0")
     db.insert_results(run_id, results)
     db.insert_validation_reports(run_id, val_reports)
@@ -119,15 +170,32 @@ def run(sample_size: int = 100, output_dir: str = "/tmp/safety_reports") -> None
     top_unsafe = db.top_unsafe_prompts(run_id, n=5)
     print(f"      Stored {len(results)} evaluation results.\n")
 
+    # ---- Model comparison ----
+    print("[5/6] Running model comparison (safe-model vs strict-model)...")
+    comparator = ModelComparator(
+        clients={
+            "safe-model-v1": _SAFE_CLIENT,
+            "strict-model-v2": _STRICT_CLIENT,
+        },
+        evaluator=evaluator,
+    )
+    comparison_report = comparator.run(prompts[:20])  # Use subset for speed
+    tradeoff = comparison_report.tradeoff_data
+    for td in tradeoff:
+        print(
+            f"      {td['model']}: safety={td['safety_score']:.2f} "
+            f"helpfulness={td['helpfulness_score']:.2f}"
+        )
+    print()
+
     # ---- Drift analysis ----
     drift_analyzer = SafetyDriftAnalyzer(db)
-    print("[4/5] Analysing safety drift...")
+    print("[6/6] Analysing safety drift & generating reports...")
     drift_report = drift_analyzer.analyse()
     print(f"      Overall drift detected: {drift_report['overall_drift_detected']}\n")
 
     # ---- Generate reports ----
     reporter = RiskReporter(output_dir=output_dir)
-    print("[5/5] Generating stakeholder reports...")
     csv_path = reporter.to_csv(results, run_id=run_id)
     html_path = reporter.to_html(
         results,
@@ -152,7 +220,9 @@ def run(sample_size: int = 100, output_dir: str = "/tmp/safety_reports") -> None
 
     print(f"\n{'='*60}")
     print(f"  Evaluation complete.  Run ID: {run_id}")
+    print(f"  Dashboard: streamlit run dashboard.py")
     print(f"{'='*60}\n")
+    logger.info("Evaluation run complete", extra={"run_id": run_id})
 
 
 if __name__ == "__main__":
