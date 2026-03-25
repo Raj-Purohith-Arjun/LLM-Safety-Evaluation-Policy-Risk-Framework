@@ -9,7 +9,7 @@ A structured, automated framework for evaluating the safety of large language mo
 This project provides a repeatable way to measure whether an LLM response is safe, policy-compliant, and grounded. It combines scoring metrics, guardrails, validation checks, and monitoring tools into a single workflow so you can:
 
 - Benchmark model safety across risky prompt categories
-- Detect unsafe behaviour early
+- Detect unsafe behavior early
 - Track safety drift across model updates
 - Produce shareable reports for stakeholders
 
@@ -36,7 +36,7 @@ This framework automates safety evaluation end-to-end:
 ## Key Features
 
 - **Safety Metrics**: hallucination score, unsupported-claim score, policy-violation score, and overall risk
-- **Adversarial Dataset**: 530+ labelled prompts spanning 12 safety categories
+- **Adversarial Dataset**: 530+ labeled prompts spanning 12 safety categories
 - **Guardrail Engine**: rule-based blocks, redaction, and refinement tracking
 - **Validation Pipeline**: embedding similarity checks + deterministic rule validation
 - **Safety Monitoring**: SQLite-backed history and drift analysis across runs
@@ -143,7 +143,7 @@ After a run, you can expect:
 
 - **CSV and HTML reports** with risk summaries and top unsafe prompts
 - **SQLite history** for trend analysis and model comparisons
-- **Drift indicators** that highlight shifts in safety behaviour
+- **Drift indicators** that highlight shifts in safety behavior
 
 These outputs make it easy to compare models, track regression risk, and communicate safety results clearly.
 
