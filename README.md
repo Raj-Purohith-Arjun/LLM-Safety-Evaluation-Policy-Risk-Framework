@@ -106,6 +106,8 @@ tests/
 
 ```bash
 pip install -e .[dev]
+# Or install from requirements.txt
+pip install -r requirements.txt
 ```
 
 ### Run the evaluation pipeline
